@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Trinity Room - Linear Puzzle Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: 'Courier New', monospace; color: white; user-select: none; }
+        #game-container { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; position: relative; transition: background 0.5s; }
+        
+        #hud { position: absolute; top: 20px; width: 90%; display: flex; justify-content: space-between; font-size: 18px; text-shadow: 1px 1px 2px black; pointer-events: none; z-index: 10; }
+        #inventory-bar { position: absolute; bottom: 20px; display: flex; gap: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 10px; z-index: 10; }
+        .item-slot { width: 60px; height: 60px; border: 2px solid #555; display: flex; align-items: center; justify-content: center; font-size: 10px; text-align: center; cursor: pointer; background: #222; word-break: break-all; padding: 2px; }
+        .item-slot.active { border-color: yellow; }
+        
+        #message-log { position: absolute; bottom: 120px; width: 60%; text-align: center; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 5px; min-height: 24px; transition: opacity 0.3s; z-index: 10; }
+
+        #scene { width: 600px; height: 400px; border: 4px solid white; position: relative; background: rgba(0,0,0,0.1); box-shadow: inset 0 0 50px rgba(0,0,0,0.5); }
+        
+        .obj { position: absolute; display: flex; align-items: center; justify-content: center; border: 2px solid white; cursor: pointer; transition: transform 0.2s; font-weight: bold; color: white; text-align: center; font-size: 14px; box-shadow: 2px 2px 5px rgba(0,0,0,0.5); background-size: cover; }
+        .obj:hover { transform: scale(1.05); border-color: yellow; color: yellow; }
+
+        .modal { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 400px; background: #333; border: 4px solid #888; z-index: 100; flex-direction: column; align-items: center; padding: 20px; text-align: center; }
+        .modal h2 { margin-top: 0; }
+        #table-slots { display: flex; gap: 10px; margin: 20px; flex-wrap: wrap; justify-content: center; }
+        .btn { padding: 10px 20px; cursor: pointer; background: #555; color: white; border: none; font-size: 16px; margin-top: 10px; }
+        .btn:hover { background: #777; }
+
+        #minigame-bar-container { width: 300px; height: 30px; background: #000; border: 2px solid white; position: relative; margin: 20px 0; }
+        #minigame-target { position: absolute; left: 120px; width: 60px; height: 100%; background: #0f0; opacity: 0.5; }
+        #minigame-cursor { position: absolute; left: 0; width: 5px; height: 100%; background: #f00; }
+
+        #start-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 999; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+        .instruction { max-width: 600px; line-height: 1.6; margin-bottom: 30px; color: #ccc; }
+    </style>
+</head>
+<body>
+
+<div id="start-screen">
+    <h1>ESCAPE ROOM</h1>
+    <div class="instruction">
+        <p>You are trapped in a room with no memory.</p>
+        <p>You possess three personalities. Uncover the secrets of these three personalities and reclaim your memories!</p>
+        <p>The three rooms are separate, but they share one <strong>Small Table</strong>.<br>Use it to transfer items between personalities.</p>        
+        <hr style="width:50%; border-color:#333;">
+        <p><strong>Controls:</strong><br>
+        ⬅️ ➡️ : Look around (Rotate)<br>
+        🖱️ Click : Investigate / Pick up items<br>
+        SPACE : Switch Personality</p>
+    </div>
+    <button class="btn" onclick="startGame()">Start Game</button>
+</div>
+
+<div id="game-container">
+    <div id="hud">
+        <div id="persona-display">Current: Normal</div>
+        <div id="wall-display">Front</div>
+    </div>
+
+    <div id="scene"></div>
+
+    <div id="message-log">Find clues to escape the room.</div>
+    <div id="inventory-bar"></div>
+</div>
+
+<div id="table-ui" class="modal">
+    <h2>Shared Table</h2>
+    <p>Transfer items here.</p>
+    <div id="table-slots"></div>
+    <button class="btn" onclick="closeTable()">Close</button>
+</div>
+
+<div id="minigame-ui" class="modal">
+    <h2>ARCADE CHALLENGE</h2>
+    <p>Stop the red line in the green zone!</p>
+    <div id="minigame-bar-container">
+        <div id="minigame-target"></div>
+        <div id="minigame-cursor"></div>
+    </div>
+    <button class="btn" onclick="checkMinigame()">STOP!</button>
+</div>
+
+<script>
+    const PERSONA = { NORMAL: 0, AGGRESSIVE: 1, TIMID: 2 };
+    const COLORS = { 0: "#333", 1: "#300", 2: "#002" }; 
+    const NAMES = { 0: "Normal", 1: "Aggressive", 2: "Timid" };
+    
+    let state = {
+        persona: PERSONA.NORMAL,
+        wall: 0, 
+        inventory: [[], [], []], 
+        tableItems: [],
+        minigameActive: false,
+        cursorPos: 0,
+        cursorDir: 1,
+        flags: {
+            safeCodeKnown: false,
+            safeOpen: false,
+            familyPhotoSeen: false,
+            mirrorBroken: false,
+            pillowCut: false,
+            wardrobeOpen: false,
+            arcadeWon: false,
+            drawersUnlocked: false,
+            fishFed: false
+        }
+    };
+
+    const ROOM_DATA = {
+        0: { 
+            0: [{id: 'table', name: 'Small Table', w:120, h:80, x:240, y:250, color:'#855'}],
+            1: [{id: 'table', name: 'Small Table', w:120, h:80, x:240, y:250, color:'#855'}],
+            2: [{id: 'table', name: 'Small Table', w:120, h:80, x:240, y:250, color:'#855'}]
+        },
+        1: { 
+            0: [{id: 'bookshelf', name: 'Bookshelf', w:100, h:200, x:250, y:100, color:'#642'}],
+            1: [{id: 'mirror', name: 'Mirror', w:80, h:120, x:260, y:100, color:'#aaa'}, 
+                {id: 'bat', name: 'Baseball Bat', w:40, h:100, x:350, y:250, color:'#d44', item:true}],
+            2: [{id: 'wardrobe', name: 'Big Wardrobe', w:140, h:220, x:230, y:80, color:'#321'}]
+        },
+        2: { 
+            0: [{id: 'painting', name: 'Painting', w:100, h:80, x:250, y:100, color:'#ca8'}, 
+                {id: 'safe', name: 'Safe', w:60, h:60, x:270, y:110, color:'#444', hidden:true}],
+            1: [{id: 'drawers', name: 'Drawers', w:120, h:100, x:240, y:200, color:'#522'}], 
+            2: [{id: 'boxes', name: 'Pile of Boxes', w:100, h:100, x:250, y:200, color:'#864'}]
+        },
+        3: { 
+            0: [{id: 'bed', name: 'Bed', w:180, h:100, x:210, y:200, color:'#eee'}],
+            1: [{id: 'door', name: 'Iron Door', w:120, h:220, x:240, y:80, color:'#711'}],
+            2: [{id: 'fishtank', name: 'Fish Tank', w:100, h:80, x:250, y:150, color:'#0aa'}]
+        }
+    };
+
+    function startGame() {
+        document.getElementById('start-screen').style.display = 'none';
+        updateView();
+        log("You woke up in a room. You have no memory. Find a way out.");
+    }
+
+    function log(msg) {
+        const el = document.getElementById('message-log');
+        el.innerText = msg;
+        el.style.opacity = 1;
+        setTimeout(() => { el.style.opacity = 0.8; }, 3000);
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (state.minigameActive) return;
+        if(e.key === 'ArrowRight') { state.wall = (state.wall + 1) % 4; updateView(); } 
+        else if(e.key === 'ArrowLeft') { state.wall = (state.wall + 3) % 4; updateView(); } 
+        else if(e.code === 'Space') { switchPersona(); }
+    });
+
+    function switchPersona() {
+        state.persona = (state.persona + 1) % 3;
+        document.body.style.backgroundColor = COLORS[state.persona];
+        document.getElementById('persona-display').innerText = "Current: " + NAMES[state.persona];
+        
+        const thoughts = [
+            "What happened? I need to focus.", 
+            "I'm pissed off. Everything is annoying.",
+            "It's dark... I hear noises..." 
+        ];
+        log(thoughts[state.persona]);
+        
+        updateView();
+        renderInventory();
+    }
+
+    function updateView() {
+        const scene = document.getElementById('scene');
+        scene.innerHTML = ''; 
+        const wallName = ["Front", "Right Wall", "Back Wall", "Left Wall"];
+        document.getElementById('wall-display').innerText = wallName[state.wall];
+
+        const objects = ROOM_DATA[state.wall][state.persona] || [];
+
+        objects.forEach(obj => {
+            if (obj.hidden) return;
+            const el = document.createElement('div');
+            el.className = 'obj';
+            el.style.width = obj.w + 'px'; el.style.height = obj.h + 'px';
+            el.style.left = obj.x + 'px'; el.style.top = obj.y + 'px';
+            el.style.backgroundColor = obj.color;
+            el.innerText = obj.name;
+            el.onclick = () => handleObjectClick(obj);
+            scene.appendChild(el);
+        });
+    }
+
+    function handleObjectClick(obj) {
+        const p = state.persona;
+        if (obj.id === 'table') { openTable(); return; }
+
+        // --- NORMAL ---
+        if (p === PERSONA.NORMAL) {
+            if (obj.id === 'bookshelf') {
+                if (hasItem('Demian Note')) {
+                    if (!hasItem('Fish Photo')) {
+                        addItem('Fish Photo');
+                        addItem('Drawer Key');
+                        log("Found 'Demian'. Inside is a Fish Photo and a 'Drawer Key'! The photo says: FEED THE FISHES.");
+                    } else { log("I already checked the Demian book."); }
+                } else if (!hasItem('Book') && !state.flags.pillowCut) {
+                    addItem('Book'); log("Found a random book.");
+                } else { log("Lots of books. I need a specific title."); }
+            } 
+            else if (obj.id === 'painting') {
+                if (!state.flags.safeOpen) {
+                    obj.hidden = true;
+                    ROOM_DATA[2][0].find(o => o.id === 'safe').hidden = false;
+                    updateView(); log("Moved the painting. There is a safe.");
+                }
+            } 
+            else if (obj.id === 'safe') {
+                if (state.flags.safeOpen) { log("Empty."); }
+                else if (state.flags.safeCodeKnown) {
+                    state.flags.safeOpen = true;
+                    addItem('Family Photo');
+                    log("Code 1234 works. Found a 'Family Photo' with red X's on the faces.");
+                } else { log("Locked. Need a 4-digit code."); }
+            }
+            else if (obj.id === 'bed') {
+                if (hasItem('Mirror Shard') && !state.flags.pillowCut) {
+                    state.flags.pillowCut = true;
+                    addItem('Game Coin');
+                    log("Sliced the pillow with the shard. Found a 'Game Coin'!");
+                } else { log("A soft bed."); }
+            }
+        }
+
+        // --- AGGRESSIVE ---
+        else if (p === PERSONA.AGGRESSIVE) {
+            if (obj.id === 'bat') {
+                addItem('Baseball Bat');
+                ROOM_DATA[1][1] = ROOM_DATA[1][1].filter(o => o.id !== 'bat');
+                updateView(); log("Got the bat.");
+            }
+            else if (obj.id === 'mirror') {
+                if (state.flags.mirrorBroken) { log("Already smashed."); }
+                else if (hasItem('Baseball Bat') && hasItem('Family Photo')) {
+                    state.flags.mirrorBroken = true;
+                    obj.name = "Smashed Mirror";
+                    addItem('Mirror Shard');
+                    log("I HATE THIS FACE! You smashed the mirror. Got a 'Mirror Shard'.");
+                    updateView();
+                } else { log("A mirror. I look angry."); }
+            }
+            else if (obj.id === 'drawers') {
+                if (state.flags.drawersUnlocked) { log("Already empty."); }
+                else if (hasItem('Drawer Key')) {
+                    state.flags.drawersUnlocked = true;
+                    addItem('Debris');
+                    removeItem('Drawer Key');
+                    log("Unlocked the drawer! Found some 'Debris' (bread crumbs).");
+                } else { log("Locked. I can't force it open."); }
+            }
+            else if (obj.id === 'door') {
+                if (hasItem('Iron Key')) {
+                    alert("CLANK! The Iron Door opens.\n\nYOU ESCAPED!\n\n(Level 1 Complete)");
+                    location.reload();
+                } else { log("Locked tight. Need the Iron Key."); }
+            }
+        }
+
+        // --- TIMID ---
+        else if (p === PERSONA.TIMID) {
+            if (Math.random() < 0.2 && obj.id !== 'table') { log("I'm too scared to touch that!"); return; }
+            if (obj.id === 'boxes') {
+                if (!hasItem('Flashlight')) { addItem('Flashlight'); log("Found a flashlight..."); }
+            }
+            else if (obj.id === 'wardrobe') {
+                if (state.flags.wardrobeOpen) {
+                    if (!state.flags.arcadeWon) {
+                        if (hasItem('Game Coin')) { startMinigame(); }
+                        else { log("There is an arcade machine inside. It needs a coin."); }
+                    } else { log("I already beat the game."); }
+                } else if (state.flags.familyPhotoSeen) {
+                    state.flags.wardrobeOpen = true;
+                    log("Arcade Machine is inside.");
+                    obj.name = "Arcade Machine"; updateView();
+                } else { log("It's too big and scary."); }
+            }
+            else if (obj.id === 'fishtank') {
+                if (state.flags.fishFed) { log("The fish looks happy."); }
+                else if (hasItem('Debris')) {
+                    state.flags.fishFed = true;
+                    removeItem('Debris'); addItem('Iron Key');
+                    log("Fed the fish with debris. It spat out an 'Iron Key'!");
+                } else { log("There is a hungry fish inside."); }
+            }
+        }
+    }
+
+    function addItem(name) { state.inventory[state.persona].push(name); renderInventory(); }
+    function hasItem(name) { return state.inventory[state.persona].includes(name); }
+    function removeItem(name) {
+        const idx = state.inventory[state.persona].indexOf(name);
+        if (idx > -1) state.inventory[state.persona].splice(idx, 1);
+        renderInventory();
+    }
+
+    function renderInventory() {
+        const bar = document.getElementById('inventory-bar');
+        bar.innerHTML = '';
+        state.inventory[state.persona].forEach(item => {
+            const slot = document.createElement('div');
+            slot.className = 'item-slot'; slot.innerText = item;
+            slot.onclick = () => useItem(item); bar.appendChild(slot);
+        });
+    }
+
+    function useItem(item) {
+        if (item === 'Family Photo' && state.persona === PERSONA.TIMID) {
+            state.flags.familyPhotoSeen = true;
+            log("Family!! I....I..should hide in the wardrobe now.");
+        }
+        else if (item === 'Book' && state.persona === PERSONA.AGGRESSIVE) {
+            log("Ripped the book apart! Obtained 'Torn Paper'.");
+            removeItem('Book'); addItem('Torn Paper');
+        } 
+        else if (item === 'Torn Paper' && state.persona === PERSONA.TIMID && hasItem('Flashlight')) {
+            state.flags.safeCodeKnown = true;
+            log("Flashlight reveals hidden numbers on the paper: '1234'.");
+        }
+        else if (item === 'Fish Photo') { log("A photo of a fish tank. Back: 'FEED THE FISHES'."); }
+        else { log("Holding: " + item); }
+    }
+
+    function openTable() {
+        document.getElementById('table-ui').style.display = 'flex';
+        renderTableSlots();
+    }
+    function closeTable() { document.getElementById('table-ui').style.display = 'none'; }
+
+    function renderTableSlots() {
+        const container = document.getElementById('table-slots');
+        container.innerHTML = '';
+        const myInvDiv = document.createElement('div');
+        myInvDiv.style.width = "100%"; myInvDiv.innerHTML = "<h4>My Inventory (Click to Drop)</h4>";
+        state.inventory[state.persona].forEach(item => {
+            const btn = document.createElement('button');
+            btn.className = 'btn'; btn.style.margin = '5px'; btn.innerText = item;
+            btn.onclick = () => { removeItem(item); state.tableItems.push(item); renderTableSlots(); };
+            myInvDiv.appendChild(btn);
+        });
+        container.appendChild(myInvDiv);
+
+        const tableDiv = document.createElement('div');
+        tableDiv.style.width = "100%"; tableDiv.style.marginTop = "20px"; tableDiv.style.background = "#222"; 
+        tableDiv.innerHTML = "<h4>On Table (Click to Take)</h4>";
+        state.tableItems.forEach((item, index) => {
+            const btn = document.createElement('button');
+            btn.className = 'btn'; btn.style.margin = '5px'; btn.style.background = '#855'; btn.innerText = item;
+            btn.onclick = () => { state.tableItems.splice(index, 1); addItem(item); renderTableSlots(); };
+            tableDiv.appendChild(btn);
+        });
+        container.appendChild(tableDiv);
+    }
+
+    let minigameInterval;
+    function startMinigame() {
+        state.minigameActive = true;
+        document.getElementById('minigame-ui').style.display = 'flex';
+        state.cursorPos = 0;
+        minigameInterval = setInterval(() => {
+            state.cursorPos += 2 * state.cursorDir;
+            if (state.cursorPos > 295 || state.cursorPos < 0) state.cursorDir *= -1;
+            document.getElementById('minigame-cursor').style.left = state.cursorPos + 'px';
+        }, 10);
+    }
+
+    function checkMinigame() {
+        clearInterval(minigameInterval);
+        state.minigameActive = false;
+        document.getElementById('minigame-ui').style.display = 'none';
+        if (state.cursorPos >= 120 && state.cursorPos <= 180) {
+            state.flags.arcadeWon = true;
+            removeItem('Game Coin');
+            addItem('Demian Note');
+            log("WINNER! The machine dispenses a note: 'Find the book Demian'.");
+        } else { log("Missed! Try again."); }
+    }
+
+    updateView();
+</script>
+</body>
+</html>
